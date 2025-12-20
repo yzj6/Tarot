@@ -11,12 +11,12 @@
             --text-light: #e0e0e0;
         }
 
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: var(--bg-dark); color: var(--text-light); font-family: 'Optima', 'Cinzel', serif; overflow: hidden; user-select: none; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: var(--bg-dark); color: var(--text-light); font-family: 'Optima', 'Cinzel', serif; overflow: hidden; user-select: none; touch-action: none; }
         #canvas-container { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1; }
 
         /* UI 层 */
         .ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
-        
+
         #start-screen { position: absolute; inset: 0; background: radial-gradient(circle, #1a1a1a 0%, #050505 100%); z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: all; transition: opacity 1s ease; }
         .btn-gold { padding: 12px 35px; border: 1px solid var(--gold); background: transparent; color: var(--gold); cursor: pointer; font-size: 1rem; letter-spacing: 4px; transition: all 0.4s; pointer-events: all; text-transform: uppercase; }
         .btn-gold:hover { background: var(--gold); color: black; box-shadow: 0 0 30px rgba(197, 160, 89, 0.4); }
@@ -77,6 +77,25 @@
         }
         .loader { width: 40px; height: 40px; border: 2px solid transparent; border-top-color: var(--gold); border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
+        
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            #info-panel {
+                width: 90%;
+                right: 5%;
+                left: 5%;
+                max-height: 60vh;
+                padding: 20px;
+            }
+            .tutorial-tip {
+                bottom: 150px;
+                font-size: 11px;
+            }
+            .history-handle {
+                bottom: 10px;
+                padding: 6px 20px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -160,7 +179,15 @@
     let isDragging = false;
     let startX = 0;
     let canAsh = false;
-    const RADIUS = 8; 
+    // 卡片半径
+    let RADIUS = 8; 
+    const cardNum = 78;// 最多78张牌
+    
+    // 触摸事件变量
+    let touchStartX = 0;
+    let touchStartTime = 0;
+    const TAP_MAX_TIME = 300; // 最大点击时间（毫秒）
+    const TAP_MAX_MOVE = 10;  // 最大点击移动距离（像素）
 
     const textureLoader = new THREE.TextureLoader();
 
@@ -188,11 +215,22 @@
         raycaster = new THREE.Raycaster();
         mouse = new THREE.Vector2();
 
+        // 窗口事件
         window.addEventListener('resize', onWindowResize);
+        
+        // 鼠标事件
         window.addEventListener('mousemove', onMouseMove);
         window.addEventListener('mousedown', onMouseDown);
         window.addEventListener('mouseup', onMouseUp);
         window.addEventListener('wheel', onWheel);
+        
+        // 触摸事件
+        const canvas = renderer.domElement;
+        canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+        canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+        canvas.addEventListener('touchend', onTouchEnd);
+        
+        // 按钮事件
         document.getElementById('startBtn').addEventListener('click', startGame);
         document.getElementById('historyBtn').addEventListener('click', () => {
             document.getElementById('history-panel').classList.toggle('open');
@@ -201,10 +239,138 @@
         await preloadAssets();
     }
 
+    // ==========================================
+    // 4. 触摸事件处理
+    // ==========================================
+    function onTouchStart(e) {
+        if (e.touches.length !== 1) return;
+        
+        const touch = e.touches[0];
+        touchStartX = touch.clientX;
+        touchStartTime = Date.now();
+        
+        // 更新鼠标坐标用于射线检测
+        mouse.x = (touch.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(touch.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    function onTouchMove(e) {
+        if (e.touches.length !== 1) return;
+        
+        if (currentState !== STATE.CAROUSEL) return;
+        
+        const touch = e.touches[0];
+        const deltaX = touch.clientX - touchStartX;
+        
+        // 在CAROUSEL状态下，触摸移动控制旋转
+        targetRotation -= deltaX * 0.005;
+        touchStartX = touch.clientX;
+        
+        // 更新鼠标坐标
+        mouse.x = (touch.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(touch.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    function onTouchEnd(e) {
+        if (e.touches.length > 0) return;
+        
+        const touch = e.changedTouches[0];
+        const endX = touch.clientX;
+        const endTime = Date.now();
+        
+        // 计算移动距离和时间
+        const deltaX = Math.abs(endX - touchStartX);
+        const deltaTime = endTime - touchStartTime;
+        
+        // 判断是否是点击（短时间、短距离）
+        if (deltaTime < TAP_MAX_TIME && deltaX < TAP_MAX_MOVE) {
+            // 这是点击，执行点击逻辑
+            handleTap();
+        }
+    }
+
+    function handleTap() {
+        if (currentState === STATE.CAROUSEL) {
+            // 在转盘状态下点击卡片
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cardDeck);
+            if (intersects.length > 0) {
+                focusCard(intersects[0].object);
+            }
+        } else if (currentState === STATE.FOCUS_BACK) {
+            // 点击背面翻转卡片
+            flipCard(window.currentFocusCard);
+        } else if (currentState === STATE.FOCUS_FRONT && canAsh) {
+            // 点击正面使卡片灰化
+            ashCard(window.currentFocusCard);
+        }
+    }
+
+    // ==========================================
+    // 5. 鼠标事件处理
+    // ==========================================
+    function onWheel(e) {
+        if (currentState === STATE.CAROUSEL) targetRotation -= e.deltaY * 0.001;
+    }
+    
+    function onMouseDown(e) {
+        if (currentState === STATE.CAROUSEL) { 
+            isDragging = true; 
+            startX = e.clientX; 
+        }
+    }
+    
+    function onMouseMove(e) {
+        mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+        
+        if (isDragging && currentState === STATE.CAROUSEL) {
+            targetRotation -= (e.clientX - startX) * 0.005; 
+            startX = e.clientX;
+        }
+    }
+    
+    function onMouseUp(e) {
+        if (isDragging) {
+            isDragging = false;
+            const moveDist = Math.abs(e.clientX - startX);
+            if(moveDist < 10) {
+                // 如果是轻微移动，视为点击
+                handleClick();
+            }
+        } else {
+            // 直接点击（没有移动）
+            handleClick();
+        }
+    }
+
+    function handleClick() {
+        if (currentState === STATE.CAROUSEL) {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cardDeck);
+            if (intersects.length > 0) {
+                focusCard(intersects[0].object);
+            }
+        } else if (currentState === STATE.FOCUS_BACK) {
+            flipCard(window.currentFocusCard);
+        } else if (currentState === STATE.FOCUS_FRONT && canAsh) {
+            ashCard(window.currentFocusCard);
+        }
+    }
+
     async function preloadAssets() {
         await new Promise(resolve => textureLoader.load(CARD_BACK, resolve));
         document.getElementById('loading-overlay').style.opacity = '0';
         setTimeout(() => document.getElementById('loading-overlay').style.display = 'none', 800);
+    }
+
+    function calculateRadius(totalCards) {
+        const baseRadius = 8; // 22张牌时的半径
+        const baseCards = 22;
+        // 每增加一定数量的牌，半径相应增加
+        const radiusIncrement = 0.2; // 每张牌增加的半径
+        
+        return baseRadius + (totalCards - baseCards) * radiusIncrement;
     }
 
     function startGame() {
@@ -212,7 +378,9 @@
         setTimeout(() => document.getElementById('start-screen').style.display = 'none', 1000);
         document.getElementById('scrollTip').style.opacity = '1';
 
-        let deckData = [...allTarotData].sort(() => Math.random() - 0.5).slice(0, 22);
+        let deckData = [...allTarotData].sort(() => Math.random() - 0.5).slice(0, cardNum);
+        RADIUS = calculateRadius(deckData.length);
+        camera.position.set(0, 0, 8-RADIUS);
         deckData.forEach((data, index) => createCardMesh(data, index, deckData.length));
 
         animate();
@@ -248,7 +416,7 @@
     }
 
     // ==========================================
-    // 4. 动画逻辑：平移与翻转
+    // 6. 动画逻辑：平移与翻转
     // ==========================================
     function focusCard(card) {
         currentState = STATE.FOCUS_BACK;
@@ -258,9 +426,8 @@
         // 获取卡片当前的全局旋转和位置（处理当前圆环旋转后的偏移）
         const worldPos = new THREE.Vector3();
         card.getWorldPosition(worldPos);
-        
+
         // 1. 瞬间锁定卡片姿态：确保背面正对相机，不随旋转飘动
-        // 我们不使用 Tween 旋转它，而是直接设定目标角度，让平移过程保持这个姿态
         card.rotation.set(0, Math.PI, card.userData.data.isReversed ? Math.PI : 0);
 
         // 2. 隐藏其他卡片
@@ -268,10 +435,9 @@
             if (c !== card) new TWEEN.Tween(c.position).to({ y: -12 }, 700).easing(TWEEN.Easing.Quadratic.In).start();
         });
 
-        // 3. 线性平移：从当前世界坐标平移到相机前方的 (-4) 深度，避免重叠
-        // 将 Z 轴设为 -4，远离 UI 和底部
+        // 3. 线性平移：从当前世界坐标平移到相机前方的 (-4) 深度
         new TWEEN.Tween(card.position)
-            .to({ x: 0, y: 0.5, z: -4 }, 1000) // y 上移 0.5 避开底部字
+            .to({ x: 0, y: 0.5, z: 8-RADIUS-4 }, 1000)
             .easing(TWEEN.Easing.Cubic.Out)
             .start();
     }
@@ -281,7 +447,7 @@
         canAsh = false;
         document.getElementById('scrollTip').style.opacity = '0';
 
-        // 纯 Y 轴翻转，不改变其他轴
+        // 纯 Y 轴翻转
         new TWEEN.Tween(card.rotation)
             .to({ y: 0 }, 1400)
             .easing(TWEEN.Easing.Quartic.InOut)
@@ -322,48 +488,17 @@
     }
 
     // ==========================================
-    // 5. 交互处理 (修正方向)
-    // ==========================================
-    function onWheel(e) {
-        if (currentState === STATE.CAROUSEL) targetRotation -= e.deltaY * 0.001;
-    }
-    function onMouseDown(e) {
-        if (currentState === STATE.CAROUSEL) { isDragging = true; startX = e.clientX; }
-    }
-    function onMouseUp(e) {
-        if (isDragging) {
-            isDragging = false;
-            if(Math.abs(e.clientX - startX) < 10) {
-                raycaster.setFromCamera(mouse, camera);
-                const intersects = raycaster.intersectObjects(cardDeck);
-                if (intersects.length > 0) focusCard(intersects[0].object);
-            }
-        } else {
-            if (currentState === STATE.FOCUS_BACK) flipCard(window.currentFocusCard);
-            else if (currentState === STATE.FOCUS_FRONT && canAsh) ashCard(window.currentFocusCard);
-        }
-    }
-    function onMouseMove(e) {
-        mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-        mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-        if (isDragging && currentState === STATE.CAROUSEL) {
-            targetRotation -= (e.clientX - startX) * 0.005; 
-            startX = e.clientX;
-        }
-    }
-
-    // ==========================================
-    // 6. UI & 粒子系统
+    // 7. UI & 粒子系统
     // ==========================================
     function showInfo(data) {
         const details = allTarotData.find(c => c.id === data.id);
         const panel = document.getElementById('info-panel');
         document.getElementById('card-name').innerHTML = `${data.name}<br><small>${data.nameEn}</small>`;
         document.getElementById('card-orient').innerText = data.isReversed ? "逆位 REVERSED" : "正位 UPRIGHT";
-        
+
         const kw = data.isReversed ? details.keywords.reversed : details.keywords.upright;
         const mean = data.isReversed ? details.meanings.reversed : details.meanings.upright;
-        
+
         document.getElementById('keywords').innerHTML = `<div class="keywords"><span class="keyword-label">KEYWORD</span>${Array.isArray(kw) ? kw.join(' / ') : kw}</div>`;
         document.getElementById('card-desc').innerHTML = mean;
         panel.classList.add('visible');
@@ -375,13 +510,13 @@
         const item = document.createElement('div');
         item.className = 'history-item';
         item.id = `hist-${data.id}`;
-        
+
         const details = allTarotData.find(c => c.id === data.id);
         const kw = data.isReversed ? details.keywords.reversed : details.keywords.upright;
         const kwStr = Array.isArray(kw) ? kw.slice(0, 2).join(' · ') : kw;
 
         item.innerHTML = `<img src="${imgUrl}" class="history-thumb" style="transform: ${data.isReversed ? 'rotate(180deg)' : 'none'}">`;
-        
+
         const tooltip = document.getElementById('history-tooltip');
         item.onmouseenter = (e) => {
             const rect = item.getBoundingClientRect();
@@ -391,6 +526,18 @@
             tooltip.style.opacity = '1';
         };
         item.onmouseleave = () => tooltip.style.opacity = '0';
+        
+        // 添加触摸支持
+        item.ontouchstart = (e) => {
+            const touch = e.touches[0];
+            const rect = item.getBoundingClientRect();
+            tooltip.innerHTML = `<strong>${data.name}</strong><div style="color:var(--gold); margin:4px 0;">${data.isReversed?'逆位':'正位'}</div><div style="font-size:10px; color:#888;">关键词: ${kwStr}</div>`;
+            tooltip.style.left = rect.left + 'px';
+            tooltip.style.bottom = (window.innerHeight - rect.top + 10) + 'px';
+            tooltip.style.opacity = '1';
+        };
+        item.ontouchend = () => tooltip.style.opacity = '0';
+        
         list.prepend(item);
     }
 
